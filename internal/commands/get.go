@@ -77,5 +77,5 @@ func runGet(cmd *cobra.Command, args []string) {
 	}
 	fmt.Printf("  Created:    %s\n", entry.CreatedAt.Format("2006-01-02 15:04:05"))
 	fmt.Printf("  Modified:   %s\n", entry.ModifiedAt.Format("2006-01-02 15:04:05"))
-	fmt.Println("═══════════════════════════════════════\n")
+	fmt.Println("═══════════════════════════════════════")
 }

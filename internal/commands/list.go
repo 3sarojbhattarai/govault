@@ -71,7 +71,7 @@ func runList(cmd *cobra.Command, args []string) {
 			truncate(entry.Username, 20),
 			entry.ModifiedAt.Format("2006-01-02 15:04"))
 	}
-	fmt.Println("═══════════════════════════════════════════════════════════════════\n")
+	fmt.Println("═══════════════════════════════════════════════════════════════════")
 }
 
 func truncate(s string, maxLen int) string {
