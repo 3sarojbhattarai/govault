@@ -14,13 +14,13 @@ all: build
 build:
 	go build $(GO_FLAGS) -o $(BINARY_NAME) $(MAIN_FILE)
 
-## Run: Run the built binary (requires build)
-run-build: build
-	./$(BINARY_NAME)
-
-## Run-Dev: Run the application directly without build
+## Run-Dev: Run the application directly without build (e.g. make run CMD="add github")
 run:
-	go run $(MAIN_FILE)
+	go run $(MAIN_FILE) $(CMD)
+
+## Run: Build then run the binary with optional command (e.g. make run-build CMD="get github")
+run-build: build
+	./$(BINARY_NAME) $(CMD)
 
 ## Test: Run all tests
 test:

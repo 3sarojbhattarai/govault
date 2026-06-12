@@ -14,12 +14,13 @@ A secure, modular password manager CLI built with Go.
 - [Quick Start](#quick-start)
   - [Installation](#installation)
   - [Basic Usage](#basic-usage)
-- [Commands](#commands)
-  - [generate](#generate---generate-a-secure-password)
-  - [add](#add---add-a-password-entry)
-  - [list](#list---list-all-entries)
-  - [get](#get---retrieve-a-password)
-  - [delete](#delete---delete-an-entry)
+- [Architecture](#architecture)
+  - [Code Layers](#code-layers)
+  - [Vault File Format](#vault-file-format)
+  - [How the Master Password Works](#how-the-master-password-works)
+- [Development](#development)
+  - [Build & Run](#build--run)
+  - [Commands](#commands)
 - [Security](#security)
   - [How It Works](#how-it-works)
   - [Technical Details](#technical-details)
@@ -52,106 +53,205 @@ A secure, modular password manager CLI built with Go.
 
 ### Installation
 
+**Install directly from GitHub (recommended):**
+
 ```bash
-# Clone the repository
+go install github.com/3sarojbhattarai/govault@latest
+```
+
+This downloads, builds, and places the binary in your `$GOPATH/bin`. Make sure `$GOPATH/bin` (usually `~/go/bin`) is on your `$PATH`.
+
+**Or clone and build manually:**
+
+```bash
 git clone https://github.com/3sarojbhattarai/govault
 cd govault
-
-# Build the application using Makefile
-make build
-
-# (Optional) Install globally
-make install
+make build          # produces ./govault binary
+make install        # installs to $GOPATH/bin
 ```
 
 ### Basic Usage
 
 ```bash
 # Generate a secure password
-./govault generate
+govault generate
 
-# Add a new password entry
-./govault add github
+# Add a new password entry (interactive prompts follow)
+govault add github
 
-# List all entries
-./govault list
+# List all stored entries
+govault list
 
-# Retrieve a password
-./govault get github
+# Retrieve full details of an entry
+govault get github
 
 # Delete an entry
-./govault delete github
+govault delete github
 ```
 
 ---
 
-## Commands
+## Architecture
 
-### `generate` - Generate a Secure Password
+### Code Layers
+
+```
+┌──────────────────────────────────────────────────────┐
+│                     CLI  (cmd/)                      │
+│          Cobra root command + RegisterCommands       │
+├──────────────────────────────────────────────────────┤
+│              Commands  (internal/commands/)           │
+│       add · get · list · delete · generate           │
+│   (shared loadVault / saveVault helpers live here)   │
+├─────────────────┬──────────────────┬─────────────────┤
+│  Models         │  Crypto          │  Storage        │
+│  (models/)      │  (crypto/)       │  (storage/)     │
+│  Entry, Vault   │  AES-256-GCM     │  Storage iface  │
+│  structs        │  PBKDF2 key deriv│  FileStorage    │
+└─────────────────┴──────────────────┴─────────────────┘
+```
+
+Each command follows the same pattern: prompt for master password → `loadVault` (decrypt) → mutate in-memory `Vault` → `saveVault` (re-encrypt). The `Storage` interface decouples the commands from the filesystem, making alternative backends straightforward to add.
+
+---
+
+### Vault File Format
+
+The vault is a single binary file at `~/.govault/vault.enc` (permissions `0600`):
+
+```
+┌───────────────────┬────────────────────────────────────────────┐
+│  Salt  (32 bytes) │       AES-256-GCM encrypted payload        │
+│   stored in plain │  [12-byte nonce │ ciphertext │ 16-byte tag]│
+└───────────────────┴────────────────────────────────────────────┘
+```
+
+The salt must be readable before decryption (it is needed to re-derive the key), so it is stored unencrypted. The encrypted payload is the JSON-serialised `Vault` struct. The GCM authentication tag at the end of the payload lets the cipher detect any tampering or a wrong decryption key.
+
+---
+
+### How the Master Password Works
+
+**The master password is never stored — not in the vault file, not on disk, not anywhere.**
+
+**First use — vault creation:**
+
+```
+master password  ──┐
+                   ├──▶  PBKDF2-HMAC-SHA256 (600,000 iter)  ──▶  256-bit key
+random 32-byte     │
+salt (generated)  ─┘
+                                                                        │
+                                             AES-256-GCM encrypt  ◀────┘
+                                                        │
+                                                        ▼
+                              vault.enc = [ salt (32 B) | nonce | ciphertext | tag ]
+```
+
+**Every subsequent use:**
+
+```
+                              vault.enc = [ salt (32 B) | nonce | ciphertext | tag ]
+                                                │
+                                 read salt  ────┘
+
+master password  ──┐
+                   ├──▶  PBKDF2-HMAC-SHA256 (600,000 iter)  ──▶  256-bit key
+stored salt       ─┘
+                                                                        │
+                                             AES-256-GCM decrypt  ◀────┘
+                                                        │
+                               wrong password?  GCM tag mismatch  ──▶  "incorrect master password"
+                               correct password?  plaintext JSON   ──▶  Vault struct in memory
+```
+
+Because AES-GCM is authenticated encryption, a wrong password produces a tag-verification failure rather than silently decrypting garbage. This is how GoVault knows the password is wrong without ever storing a hash or hint.
+
+The derived key and the password bytes exist only in process memory for the duration of the command and are released when the process exits.
+
+---
+
+## Development
+
+### Build & Run
+
+| Command | Description |
+|---|---|
+| `make build` | Compile binary (`./govault`) |
+| `make run CMD="<args>"` | Run without building (e.g. `make run CMD="add github"`) |
+| `make run-build CMD="<args>"` | Build then run (e.g. `make run-build CMD="get github"`) |
+| `make test` | Run all tests with verbose output |
+| `make fmt` | Format all Go source files |
+| `make lint` | Run `go vet` |
+| `make deps` | Tidy `go.mod` / `go.sum` |
+| `make install` | Install binary to `$GOPATH/bin` |
+| `make clean` | Remove all build artifacts |
+| `make release` | Cross-compile for Linux, macOS (Intel + ARM), and Windows |
+
+To run a single test:
+
+```bash
+go test -v ./internal/crypto/... -run TestFunctionName
+```
+
+---
+
+### Commands
+
+#### `generate` - Generate a Secure Password
 
 Generate cryptographically secure random passwords.
 
-**Usage:**
 ```bash
-./govault generate [flags]
+govault generate [flags]
 ```
 
-**Flags:**
-- `-l, --length int` - Length of the password (default: 20)
-- `--no-symbols` - Exclude symbols from password
-- `--no-digits` - Exclude digits from password
-- `--no-uppercase` - Exclude uppercase letters from password
+| Flag | Default | Description |
+|---|---|---|
+| `-l, --length` | `20` | Password length |
+| `--no-symbols` | — | Exclude symbols |
+| `--no-digits` | — | Exclude digits |
+| `--no-uppercase` | — | Exclude uppercase letters |
 
 ---
 
-### `add` - Add a Password Entry
+#### `add` - Add a Password Entry
 
-Add a new password to your vault.
-
-**Usage:**
 ```bash
-./govault add <name>
+govault add <name>
 ```
 
-**Interactive Prompts:**
-- **Master password** - Creates vault on first use
-- **Username** - Account username
-- **Password** - Account password (hidden input)
-- **URL** - Website URL (optional)
-- **Notes** - Additional notes (optional)
+Interactive prompts: master password · username · password (hidden) · URL (optional) · notes (optional). Creates the vault on first use.
 
 ---
 
-### `list` - List All Entries
+#### `list` - List All Entries
 
-Display all stored password entries in a formatted table.
-
-**Usage:**
 ```bash
-./govault list
+govault list
 ```
+
+Displays all entries in a formatted table.
 
 ---
 
-### `get` - Retrieve a Password
+#### `get` - Retrieve a Password
 
-View the complete details of a password entry.
-
-**Usage:**
 ```bash
-./govault get <name>
+govault get <name>
 ```
+
+Shows full details of a single entry.
 
 ---
 
-### `delete` - Delete an Entry
+#### `delete` - Delete an Entry
 
-Remove a password entry from the vault.
-
-**Usage:**
 ```bash
-./govault delete <name>
+govault delete <name>
 ```
+
+Prompts for confirmation before removing the entry.
 
 ---
 
@@ -194,4 +294,3 @@ Contributions are welcome! Please see [CONTRIBUTING.md](CONTRIBUTING.md) for dev
 ## License
 
 This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
-
